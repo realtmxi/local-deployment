@@ -78,10 +78,6 @@ echo "Job ID: $SLURM_JOB_ID"
 echo "Running on node: $(hostname)"
 echo "Allocated GPU: $CUDA_VISIBLE_DEVICES"
 
-### --- Load Essential Modules ---
-module load cuda
-module load gcc/12.2.0-fasrc01
-
 ### --- Main Execution Block ---
 # Launch both manager functions in the background
 manage_sglang &
