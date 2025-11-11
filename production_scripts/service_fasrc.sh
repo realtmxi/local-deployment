@@ -45,8 +45,7 @@ manage_sglang() {
             --host 0.0.0.0 \
             --port "$PORT" \
             --tp-size "$TP_SIZE" \
-            --enable-metrics \
-            --trust-remote-code &
+            --enable-metrics &
         SGLANG_PID=$!
         echo "[SGLANG_MGR] SGLang server started with PID: $SGLANG_PID"
         wait $SGLANG_PID

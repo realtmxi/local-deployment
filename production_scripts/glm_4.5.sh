@@ -15,5 +15,5 @@ TP_SIZE=4
 REMOTE_SSH_URL=yiyu@freeinference.org
 
 
-bash "/n/juncheng_lab/Lab/llm-workload/production_scripts/service.sh" $MODEL_PATH $PORT $TP_SIZE $REMOTE_SSH_URL
+bash "/n/juncheng_lab/Lab/llm-workload/production_scripts/service_fasrc.sh" $MODEL_PATH $PORT $TP_SIZE $REMOTE_SSH_URL
 
