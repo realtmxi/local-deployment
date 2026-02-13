@@ -1,0 +1,14 @@
+[Unit]
+Description=Qwen3-Coder-30B Deployment Service
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/bin/bash /home/murphy/Local-Deployment-Scripts/qwen3_coder_30b.sh
+WorkingDirectory=/home/murphy/Local-Deployment-Scripts
+Restart=always
+RestartSec=10
+Environment=CUDA_VISIBLE_DEVICES=0,1
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,7 @@
+# Vim swap files
+*.swp
+*.swo
+
+# Benchmark results
+bench_results/
+sglang_*.jsonl

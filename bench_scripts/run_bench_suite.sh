@@ -28,10 +28,15 @@ NUM_PROMPTS=1000
 # Path to the python executable in the virtual environment
 PYTHON_EXEC="python3"
 
+# Tokenizer path - use local model path to avoid downloading from HuggingFace
+# You can override this by setting the TOKENIZER environment variable
+TOKENIZER="${TOKENIZER:-/home/murphy/models/Qwen3-Coder-30B-A3B-Instruct}"
+
 # --- Benchmark Execution ---
 
 BASE_LOG_DIR="bench_results"
 echo "Starting benchmark suite. Results will be saved in '$BASE_LOG_DIR'."
+echo "Using tokenizer: $TOKENIZER"
 
 for output_len in "${OUTPUT_LENGTHS[@]}"; do
     # --- 1. Prompt Length Sweep ---
@@ -55,7 +60,8 @@ for output_len in "${OUTPUT_LENGTHS[@]}"; do
                 --random-output-len "$output_len" \
                 --num-prompts "$NUM_PROMPTS" \
                 --max-concurrency "$FIXED_CONCURRENCY_FOR_PROMPT_SWEEP" \
-                --request-rate inf > "$LOG_FILE" 2>&1
+                --request-rate inf \
+                --tokenizer "$TOKENIZER" > "$LOG_FILE" 2>&1
         fi
     done
 
@@ -80,7 +86,8 @@ for output_len in "${OUTPUT_LENGTHS[@]}"; do
                 --random-output-len "$output_len" \
                 --num-prompts "$NUM_PROMPTS" \
                 --max-concurrency "$concurrency" \
-                --request-rate inf > "$LOG_FILE" 2>&1
+                --request-rate inf \
+                --tokenizer "$TOKENIZER" > "$LOG_FILE" 2>&1
         fi
     done
 done
@@ -101,7 +108,8 @@ for concurrency in "${CONCURRENCIES[@]}"; do
         "$PYTHON_EXEC" -m sglang.bench_serving \
             --backend sglang --host 127.0.0.1 --port "$PORT" --dataset-name random \
             --random-input-len 200000 --random-output-len 10 --num-prompts "$NUM_PROMPTS" \
-            --max-concurrency "$concurrency" --request-rate inf > "$LOG_FILE" 2>&1
+            --max-concurrency "$concurrency" --request-rate inf \
+            --tokenizer "$TOKENIZER" > "$LOG_FILE" 2>&1
     fi
 done
 
