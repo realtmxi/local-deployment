@@ -1,0 +1,14 @@
+[Unit]
+Description=GLM-4.7-Flash Q8_0 Deployment Service (llama.cpp)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/bin/bash /home/murphy/Local-Deployment-Scripts/glm_4.7_flash.sh
+WorkingDirectory=/home/murphy/Local-Deployment-Scripts
+Restart=always
+RestartSec=10
+Environment=CUDA_VISIBLE_DEVICES=1
+
+[Install]
+WantedBy=default.target

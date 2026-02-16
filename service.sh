@@ -9,8 +9,8 @@ set -e
 # Configuration Validation
 # ============================================
 
-if [ "$#" -lt 4 ] || [ "$#" -gt 5 ]; then
-    echo "Usage: $0 <model_path> <port> <tp_size> <remote_ssh_url> [python_venv]"
+if [ "$#" -lt 4 ] || [ "$#" -gt 6 ]; then
+    echo "Usage: $0 <model_path> <port> <tp_size> <remote_ssh_url> [python_venv] [extra_args]"
     echo ""
     echo "Arguments:"
     echo "  model_path      - Path to the model directory"
@@ -18,9 +18,10 @@ if [ "$#" -lt 4 ] || [ "$#" -gt 5 ]; then
     echo "  tp_size         - Tensor parallel size (1 for single GPU)"
     echo "  remote_ssh_url  - SSH URL for tunnel (e.g., user@host)"
     echo "  python_venv     - Optional: Path to Python virtual environment"
+    echo "  extra_args      - Optional: Extra arguments for sglang (e.g., '--quantization awq')"
     echo ""
     echo "Example:"
-    echo "  $0 /path/to/model 8003 1 user@host /path/to/.venv"
+    echo "  $0 /path/to/model 8003 1 user@host /path/to/.venv '--quantization awq'"
     exit 1
 fi
 
@@ -29,6 +30,7 @@ PORT=$2
 TP_SIZE=$3
 REMOTE_SSH_URL=$4
 PYTHON_VENV=${5:-"$(dirname "$0")/.venv"}  # Default to script directory's .venv
+EXTRA_ARGS=${6:-""}
 
 PYTHON_BIN="${PYTHON_VENV}/bin/python3"
 
@@ -115,7 +117,8 @@ start_sglang() {
         --tp-size "$TP_SIZE" \
         --dp-size 1 \
         --enable-metrics \
-        --mem-fraction-static 0.80 2>&1 | tee -a "$LOG_FILE" &
+        --mem-fraction-static 0.80 \
+        $EXTRA_ARGS 2>&1 | tee -a "$LOG_FILE" &
 
     SGLANG_PID=$!
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] [SGLang] Server started with PID: $SGLANG_PID" | tee -a "$LOG_FILE"

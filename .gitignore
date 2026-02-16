@@ -5,3 +5,6 @@
 # Benchmark results
 bench_results/
 sglang_*.jsonl
+
+# Compiled binaries
+bin/
