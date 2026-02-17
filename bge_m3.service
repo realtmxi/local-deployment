@@ -1,0 +1,14 @@
+[Unit]
+Description=BGE-M3 Embedding Deployment Service (sglang)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/bin/bash /home/murphy/Local-Deployment-Scripts/bge_m3.sh
+WorkingDirectory=/home/murphy/Local-Deployment-Scripts
+Restart=always
+RestartSec=10
+Environment=CUDA_VISIBLE_DEVICES=1
+
+[Install]
+WantedBy=default.target
