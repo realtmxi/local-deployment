@@ -1,16 +1,16 @@
 #!/bin/bash
 
 # ============================================
-# BGE-M3 Embedding Deployment (sglang)
+# BGE-M3 Embedding Deployment (Docker + sglang)
 # ============================================
 #
 # Model: BAAI/bge-m3 (XLM-RoBERTa, ~568M params)
-# GPU: RTX PRO 6000 Blackwell (shared with GLM-4.7-Flash on GPU 1)
+# GPU: NVIDIA GB10 (DGX Spark, unified memory, sm_121)
 # Port: 8005
+# Container: lmsysorg/sglang:spark (built for Blackwell GB10)
 #
 # Note: sglang's roberta.py has a position assertion bug that
-# crashes on health checks. We patch line 95 to disable it.
-# See .venv/lib/python3.12/site-packages/sglang/srt/models/roberta.py
+# crashes on health checks. We patch it at container startup.
 #
 # Usage:
 #   bash bge_m3.sh
@@ -19,57 +19,50 @@
 
 set -e
 
-# Get script directory
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-
 # ============================================
 # Configuration
 # ============================================
 
-MODEL_PATH="/scratch/murphy/models/bge-m3"
+MODEL_PATH="/home/murphy/models/bge-m3"
 PORT=8005
+CONTAINER_NAME="bge-m3-embedding"
+DOCKER_IMAGE="lmsysorg/sglang:spark"
 REMOTE_SSH_URL="murphy@freeinference.org"
-PYTHON_VENV="${SCRIPT_DIR}/.venv"
-PYTHON_BIN="${PYTHON_VENV}/bin/python3"
 
 # Log configuration
-LOG_DIR="/scratch/murphy/logs/sglang"
+LOG_DIR="/home/murphy/logs/sglang"
 mkdir -p "$LOG_DIR"
 LOG_FILE="${LOG_DIR}/bge-m3_$(date +%Y%m%d_%H%M%S).log"
 
-# ============================================
-# GPU Configuration
-# ============================================
-
-# Use GPU 1 (shared with GLM-4.7-Flash, BGE-M3 only needs ~3GB)
-export CUDA_VISIBLE_DEVICES=1
+# Path to roberta.py inside the container
+ROBERTA_PY="/sgl-workspace/sglang/python/sglang/srt/models/roberta.py"
 
 # ============================================
 # Validation
 # ============================================
 
 echo "========================================="
-echo "  BGE-M3 Embedding Deployment (sglang)"
+echo "  BGE-M3 Embedding Deployment (Docker)"
 echo "========================================="
 echo ""
-
-if [ ! -f "$PYTHON_BIN" ]; then
-    echo "Error: Python binary not found at $PYTHON_BIN"
-    exit 1
-fi
 
 if [ ! -d "$MODEL_PATH" ]; then
     echo "Error: Model path not found: $MODEL_PATH"
     exit 1
 fi
 
+if ! command -v docker &> /dev/null; then
+    echo "Error: docker not found"
+    exit 1
+fi
+
 echo "Configuration:"
 echo "  Model:         $MODEL_PATH"
 echo "  Port:          $PORT"
+echo "  Container:     $CONTAINER_NAME"
+echo "  Image:         $DOCKER_IMAGE"
 echo "  SSH Tunnel:    $REMOTE_SSH_URL"
-echo "  Python:        $PYTHON_BIN"
 echo "  Hostname:      $(hostname)"
-echo "  GPU Devices:   ${CUDA_VISIBLE_DEVICES:-all}"
 echo "  Log File:      $LOG_FILE"
 echo ""
 
@@ -83,10 +76,9 @@ cleanup() {
     echo "  Shutting down services..."
     echo "========================================="
 
-    if [ ! -z "$SERVER_PID" ]; then
-        echo "Stopping sglang server (PID: $SERVER_PID)..."
-        kill $SERVER_PID 2>/dev/null || true
-    fi
+    echo "Stopping container $CONTAINER_NAME..."
+    docker stop "$CONTAINER_NAME" 2>/dev/null || true
+    docker rm "$CONTAINER_NAME" 2>/dev/null || true
 
     if [ ! -z "$TUNNEL_PID" ]; then
         echo "Stopping SSH tunnel (PID: $TUNNEL_PID)..."
@@ -98,23 +90,40 @@ cleanup() {
 
 trap cleanup SIGINT SIGTERM EXIT
 
+# Remove stale container if exists
+docker rm -f "$CONTAINER_NAME" 2>/dev/null || true
+
 # ============================================
-# Start sglang Embedding Server
+# Start sglang Embedding Server (Docker)
 # ============================================
 
-echo "[$(date '+%Y-%m-%d %H:%M:%S')] Starting sglang embedding server..." | tee -a "$LOG_FILE"
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] Starting sglang embedding server in Docker..." | tee -a "$LOG_FILE"
 
-$PYTHON_BIN -m sglang.launch_server \
-    --model-path "$MODEL_PATH" \
-    --served-model-name "bge-m3" \
-    --host 0.0.0.0 \
-    --port "$PORT" \
-    --is-embedding \
-    --mem-fraction-static 0.10 \
-    2>&1 | tee -a "$LOG_FILE" &
+docker run \
+    --gpus all \
+    --name "$CONTAINER_NAME" \
+    --network host \
+    --restart unless-stopped \
+    -v "${MODEL_PATH}:/models/bge-m3:ro" \
+    -d \
+    "$DOCKER_IMAGE" \
+    bash -c "
+        # Patch roberta.py: disable position assertion that crashes on health checks
+        sed -i 's/assert torch.equal(positions, expected_pos)/# assert torch.equal(positions, expected_pos)  # patched/' $ROBERTA_PY && \
+        python3 -m sglang.launch_server \
+            --model-path /models/bge-m3 \
+            --served-model-name bge-m3 \
+            --host 0.0.0.0 \
+            --port $PORT \
+            --is-embedding \
+            --mem-fraction-static 0.10
+    " 2>&1 | tee -a "$LOG_FILE"
 
-SERVER_PID=$!
-echo "[$(date '+%Y-%m-%d %H:%M:%S')] sglang server started with PID: $SERVER_PID" | tee -a "$LOG_FILE"
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] Container $CONTAINER_NAME started" | tee -a "$LOG_FILE"
+
+# Follow container logs in background
+docker logs -f "$CONTAINER_NAME" 2>&1 | tee -a "$LOG_FILE" &
+LOGS_PID=$!
 
 # ============================================
 # Start SSH Tunnel
@@ -139,11 +148,12 @@ echo "========================================="
 echo "  Service is running"
 echo "========================================="
 echo ""
-echo "Systemd will restart if any process exits."
-echo ""
 
-# Wait for either process to exit (then systemd will restart the whole service)
-wait -n $SERVER_PID $TUNNEL_PID 2>/dev/null || wait $SERVER_PID $TUNNEL_PID
+# Wait for container to exit or tunnel to die
+docker wait "$CONTAINER_NAME" &
+CONTAINER_WAIT_PID=$!
+
+wait -n $CONTAINER_WAIT_PID $TUNNEL_PID 2>/dev/null || wait $CONTAINER_WAIT_PID $TUNNEL_PID
 EXIT_CODE=$?
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] Process exited with code: $EXIT_CODE"
 exit $EXIT_CODE
