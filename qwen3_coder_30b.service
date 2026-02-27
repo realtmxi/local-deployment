@@ -1,6 +1,8 @@
 [Unit]
 Description=Qwen3-Coder-30B Deployment Service
-After=network.target
+After=network-online.target
+Wants=network-online.target
+Wants=qwen3_coder_30b_tunnel.service
 
 [Service]
 Type=simple
@@ -9,6 +11,7 @@ WorkingDirectory=/home/murphy/Local-Deployment-Scripts
 Restart=always
 RestartSec=10
 Environment=CUDA_VISIBLE_DEVICES=0
+Environment=ENABLE_SSH_TUNNEL=0
 
 [Install]
 WantedBy=default.target

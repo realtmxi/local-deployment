@@ -1,0 +1,18 @@
+[Unit]
+Description=Qwen3-Coder-30B Reverse SSH Tunnel (autossh)
+After=network-online.target
+Wants=network-online.target
+PartOf=qwen3_coder_30b.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStart=/bin/bash /home/murphy/Local-Deployment-Scripts/qwen3_coder_30b_tunnel.sh
+WorkingDirectory=/home/murphy/Local-Deployment-Scripts
+Restart=always
+RestartSec=3
+Environment=AUTOSSH_GATETIME=0
+Environment=AUTOSSH_POLL=30
+
+[Install]
+WantedBy=default.target

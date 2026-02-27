@@ -31,6 +31,7 @@ TP_SIZE=$3
 REMOTE_SSH_URL=$4
 PYTHON_VENV=${5:-"$(dirname "$0")/.venv"}  # Default to script directory's .venv
 EXTRA_ARGS=${6:-""}
+ENABLE_SSH_TUNNEL=${ENABLE_SSH_TUNNEL:-1}
 
 PYTHON_BIN="${PYTHON_VENV}/bin/python3"
 
@@ -67,6 +68,7 @@ echo "  Model Path:    $MODEL_PATH"
 echo "  Port:          $PORT"
 echo "  TP Size:       $TP_SIZE"
 echo "  SSH Tunnel:    $REMOTE_SSH_URL"
+echo "  Tunnel Mode:   $([ "$ENABLE_SSH_TUNNEL" = "1" ] && echo "enabled" || echo "disabled (managed externally)")"
 echo "  Python:        $PYTHON_BIN"
 echo "  Hostname:      $(hostname)"
 echo "  GPU Devices:   ${CUDA_VISIBLE_DEVICES:-all}"
@@ -156,19 +158,34 @@ start_sglang
 echo "✓ SGLang server started (PID: $SGLANG_PID)"
 
 # Start SSH tunnel
-start_tunnel
-echo "✓ SSH tunnel started (PID: $TUNNEL_PID)"
+if [ "$ENABLE_SSH_TUNNEL" = "1" ]; then
+    start_tunnel
+    echo "✓ SSH tunnel started (PID: $TUNNEL_PID)"
+else
+    echo "✓ SSH tunnel disabled in service.sh (ENABLE_SSH_TUNNEL=$ENABLE_SSH_TUNNEL)"
+fi
 
 echo ""
 echo "========================================="
 echo "  Service is running"
 echo "========================================="
 echo ""
-echo "Systemd will restart if any process exits."
+if [ "$ENABLE_SSH_TUNNEL" = "1" ]; then
+    echo "Systemd will restart if SGLang or SSH tunnel exits."
+else
+    echo "Systemd will restart if SGLang exits."
+fi
 echo ""
 
-# Wait for either process to exit (then systemd will restart the whole service)
-wait -n $SGLANG_PID $TUNNEL_PID 2>/dev/null || wait $SGLANG_PID $TUNNEL_PID
-EXIT_CODE=$?
+# Wait for process exit (then systemd will restart the service)
+set +e
+if [ "$ENABLE_SSH_TUNNEL" = "1" ]; then
+    wait -n "$SGLANG_PID" "$TUNNEL_PID"
+    EXIT_CODE=$?
+else
+    wait "$SGLANG_PID"
+    EXIT_CODE=$?
+fi
+set -e
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] Process exited with code: $EXIT_CODE"
 exit $EXIT_CODE

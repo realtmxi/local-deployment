@@ -9,41 +9,47 @@ SGLang 模型部署脚本，用于在独立服务器上运行大语言模型。
 ### 1. 启动服务
 
 ```bash
-# 使用 tmux
-tmux new -s qwen3-coder
-bash qwen3_coder_30b.sh
+# 推荐：systemd --user + autossh（更稳）
+cp qwen3_coder_30b.service ~/.config/systemd/user/
+cp qwen3_coder_30b_tunnel.service ~/.config/systemd/user/
+chmod +x qwen3_coder_30b_tunnel.sh
+
+systemctl --user daemon-reload
+systemctl --user enable --now qwen3_coder_30b.service qwen3_coder_30b_tunnel.service
 ```
 
-### 2. 分离会话
+### 2. 检查状态
 
-按 `Ctrl+B`，然后按 `D`
+```bash
+systemctl --user status qwen3_coder_30b.service
+systemctl --user status qwen3_coder_30b_tunnel.service
+```
 
 ---
 
-## 📋 Tmux 常用命令
+## 📋 systemd 常用命令
 
 ```bash
-# 查看所有会话
-tmux ls
+# 查看服务状态
+systemctl --user status qwen3_coder_30b.service
+systemctl --user status qwen3_coder_30b_tunnel.service
 
-# 重新连接到会话
-tmux attach -t qwen3-coder
-# 或简写
-tmux a -t qwen3-coder
+# 启动服务
+systemctl --user start qwen3_coder_30b.service qwen3_coder_30b_tunnel.service
 
-# 终止会话
-tmux kill-session -t qwen3-coder
+# 停止服务
+systemctl --user stop qwen3_coder_30b.service qwen3_coder_30b_tunnel.service
 
-# 在会话内创建新窗口
-Ctrl+B, C
+# 重启服务
+systemctl --user restart qwen3_coder_30b.service qwen3_coder_30b_tunnel.service
 
-# 切换窗口
-Ctrl+B, N  # 下一个
-Ctrl+B, P  # 上一个
-Ctrl+B, 0-9  # 切换到指定窗口
+# 查看日志
+journalctl --user -u qwen3_coder_30b.service -f
+journalctl --user -u qwen3_coder_30b_tunnel.service -f
 
-# 重命名会话
-tmux rename-session -t qwen3-coder new-name
+# 检查是否开机自启
+systemctl --user is-enabled qwen3_coder_30b.service
+systemctl --user is-enabled qwen3_coder_30b_tunnel.service
 ```
 
 ---
@@ -88,10 +94,11 @@ curl http://localhost:8003/v1/chat/completions \
 
 ### 查看服务日志
 
-重新连接 tmux 会话即可查看日志：
+使用 systemd 日志：
 
 ```bash
-tmux attach -t qwen3-coder
+journalctl --user -u qwen3_coder_30b.service -f
+journalctl --user -u qwen3_coder_30b_tunnel.service -f
 ```
 
 ---
@@ -164,11 +171,17 @@ export CUDA_VISIBLE_DEVICES=0,1
 ssh murphy@freeinference.org "echo OK"
 ```
 
-如果不需要 SSH 隧道，可以在 `service.sh` 中注释掉：
+重启隧道服务（推荐）：
 
 ```bash
-# manage_tunnel &
-# TUNNEL_MGR_PID=$!
+systemctl --user restart qwen3_coder_30b_tunnel.service
+systemctl --user status qwen3_coder_30b_tunnel.service
+```
+
+手动验证远端映射：
+
+```bash
+ssh murphy@freeinference.org "curl -s -o /dev/null -w 'http_code=%{http_code} exit=%{exitcode}\n' http://localhost:8003/v1/models"
 ```
 
 ---
@@ -179,6 +192,9 @@ ssh murphy@freeinference.org "echo OK"
 Local-Deployment-Scripts/
 ├── service.sh              # 核心服务管理脚本
 ├── qwen3_coder_30b.sh      # Qwen3-Coder 配置脚本
+├── qwen3_coder_30b.service # Qwen systemd 用户服务
+├── qwen3_coder_30b_tunnel.sh      # autossh 反向隧道脚本
+├── qwen3_coder_30b_tunnel.service # 隧道 systemd 用户服务
 ├── .venv/                  # Python 虚拟环境
 ├── logs/                   # 日志目录
 └── production_scripts/     # 旧版 Slurm 脚本（参考）
@@ -188,11 +204,11 @@ Local-Deployment-Scripts/
 
 ## 🔄 自动重启机制
 
-`service.sh` 内置了自动重启功能：
+`qwen3_coder_30b.service` + `qwen3_coder_30b_tunnel.service` 提供自动恢复：
 
-- ✅ SGLang 服务崩溃会自动重启（15秒后）
-- ✅ SSH 隧道断开会自动重连（15秒后）
-- ✅ 记录重启次数
+- ✅ SGLang 进程崩溃自动重启
+- ✅ SSH 反向隧道断开自动重连（autossh + systemd）
+- ✅ 机器重启后自动恢复（配合 `systemctl --user enable` + linger）
 
 ---
 
@@ -201,7 +217,7 @@ Local-Deployment-Scripts/
 ### 场景 1：临时测试
 
 ```bash
-# 前台运行，方便查看日志
+# 前台直接运行（绕过 systemd，仅用于临时 debug）
 bash qwen3_coder_30b.sh
 # Ctrl+C 停止
 ```
@@ -209,46 +225,45 @@ bash qwen3_coder_30b.sh
 ### 场景 2：长期运行
 
 ```bash
-# 使用 tmux 后台运行
-tmux new -s qwen3-coder
-bash qwen3_coder_30b.sh
-# Ctrl+B, D 分离
+# systemd 后台运行（推荐）
+systemctl --user enable --now qwen3_coder_30b.service qwen3_coder_30b_tunnel.service
 
 # 需要查看日志时
-tmux attach -t qwen3-coder
+journalctl --user -u qwen3_coder_30b.service -f
 ```
 
 ### 场景 3：服务器重启后恢复
 
 ```bash
-# 重新连接会话（如果还在）
-tmux attach -t qwen3-coder
+# 检查用户服务是否自启
+systemctl --user status qwen3_coder_30b.service
+systemctl --user status qwen3_coder_30b_tunnel.service
 
-# 如果会话已丢失，重新启动
-tmux new -s qwen3-coder
-bash qwen3_coder_30b.sh
+# 如未启用，开启开机自启
+systemctl --user enable qwen3_coder_30b.service qwen3_coder_30b_tunnel.service
+loginctl enable-linger "$USER"
 ```
 
 ---
 
-## 🎯 Tmux 快速参考
+## 🎯 systemd 快速参考
 
 | 操作 | 命令 |
 |------|------|
-| **创建会话** | `tmux new -s qwen3-coder` |
-| **列出会话** | `tmux ls` |
-| **连接会话** | `tmux a -t qwen3-coder` |
-| **分离会话** | `Ctrl+B, D` |
-| **终止会话** | `tmux kill-session -t qwen3-coder` |
-| **新窗口** | `Ctrl+B, C` |
-| **下一个窗口** | `Ctrl+B, N` |
-| **上一个窗口** | `Ctrl+B, P` |
+| **启动服务** | `systemctl --user start qwen3_coder_30b.service qwen3_coder_30b_tunnel.service` |
+| **停止服务** | `systemctl --user stop qwen3_coder_30b.service qwen3_coder_30b_tunnel.service` |
+| **重启服务** | `systemctl --user restart qwen3_coder_30b.service qwen3_coder_30b_tunnel.service` |
+| **查看状态** | `systemctl --user status qwen3_coder_30b.service` |
+| **查看日志** | `journalctl --user -u qwen3_coder_30b.service -f` |
+| **启用自启** | `systemctl --user enable qwen3_coder_30b.service qwen3_coder_30b_tunnel.service` |
+| **检查自启** | `systemctl --user is-enabled qwen3_coder_30b.service` |
 
 ---
 
 ## 📞 需要帮助？
 
-- 查看日志：`tmux attach -t qwen3-coder`
+- 查看模型日志：`journalctl --user -u qwen3_coder_30b.service -f`
+- 查看隧道日志：`journalctl --user -u qwen3_coder_30b_tunnel.service -f`
 - 检查 GPU：`nvidia-smi`
 - 测试 API：`curl http://localhost:8003/v1/models`
 
@@ -258,4 +273,3 @@ bash qwen3_coder_30b.sh
 
 - [SGLang 文档](https://github.com/sgl-project/sglang)
 - [Qwen3-Coder 模型](https://huggingface.co/Qwen/Qwen3-Coder-30B-A3B-Instruct)
-- [Tmux 快速入门](https://github.com/tmux/tmux/wiki)
