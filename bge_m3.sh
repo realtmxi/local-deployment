@@ -28,6 +28,7 @@ PORT=8005
 CONTAINER_NAME="bge-m3-embedding"
 DOCKER_IMAGE="lmsysorg/sglang:spark"
 REMOTE_SSH_URL="murphy@freeinference.org"
+ENABLE_SSH_TUNNEL="${ENABLE_SSH_TUNNEL:-1}"
 
 # Log configuration
 LOG_DIR="/home/murphy/logs/sglang"
@@ -62,6 +63,7 @@ echo "  Port:          $PORT"
 echo "  Container:     $CONTAINER_NAME"
 echo "  Image:         $DOCKER_IMAGE"
 echo "  SSH Tunnel:    $REMOTE_SSH_URL"
+echo "  Tunnel Mode:   $([ "$ENABLE_SSH_TUNNEL" = "1" ] && echo "enabled" || echo "disabled (managed externally)")"
 echo "  Hostname:      $(hostname)"
 echo "  Log File:      $LOG_FILE"
 echo ""
@@ -129,19 +131,23 @@ LOGS_PID=$!
 # Start SSH Tunnel
 # ============================================
 
-echo "[$(date '+%Y-%m-%d %H:%M:%S')] Starting SSH tunnel..." | tee -a "$LOG_FILE"
-echo "Forwarding port $PORT to $REMOTE_SSH_URL"
+if [ "$ENABLE_SSH_TUNNEL" = "1" ]; then
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Starting SSH tunnel..." | tee -a "$LOG_FILE"
+    echo "Forwarding port $PORT to $REMOTE_SSH_URL"
 
-ssh -N \
-    -o ExitOnForwardFailure=yes \
-    -o ServerAliveInterval=30 \
-    -o ServerAliveCountMax=60 \
-    -o StrictHostKeyChecking=no \
-    -R "0.0.0.0:${PORT}:localhost:${PORT}" \
-    "$REMOTE_SSH_URL" &
+    ssh -N \
+        -o ExitOnForwardFailure=yes \
+        -o ServerAliveInterval=30 \
+        -o ServerAliveCountMax=60 \
+        -o StrictHostKeyChecking=no \
+        -R "0.0.0.0:${PORT}:localhost:${PORT}" \
+        "$REMOTE_SSH_URL" &
 
-TUNNEL_PID=$!
-echo "[$(date '+%Y-%m-%d %H:%M:%S')] SSH tunnel started with PID: $TUNNEL_PID" | tee -a "$LOG_FILE"
+    TUNNEL_PID=$!
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] SSH tunnel started with PID: $TUNNEL_PID" | tee -a "$LOG_FILE"
+else
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] SSH tunnel disabled (ENABLE_SSH_TUNNEL=$ENABLE_SSH_TUNNEL)" | tee -a "$LOG_FILE"
+fi
 
 echo ""
 echo "========================================="
@@ -149,11 +155,25 @@ echo "  Service is running"
 echo "========================================="
 echo ""
 
-# Wait for container to exit or tunnel to die
+if [ "$ENABLE_SSH_TUNNEL" = "1" ]; then
+    echo "Systemd will restart if container or SSH tunnel exits."
+else
+    echo "Systemd will restart if container exits."
+fi
+echo ""
+
+# Wait for container to exit (or tunnel to die)
+set +e
 docker wait "$CONTAINER_NAME" &
 CONTAINER_WAIT_PID=$!
 
-wait -n $CONTAINER_WAIT_PID $TUNNEL_PID 2>/dev/null || wait $CONTAINER_WAIT_PID $TUNNEL_PID
-EXIT_CODE=$?
+if [ "$ENABLE_SSH_TUNNEL" = "1" ]; then
+    wait -n $CONTAINER_WAIT_PID $TUNNEL_PID 2>/dev/null || wait $CONTAINER_WAIT_PID $TUNNEL_PID
+    EXIT_CODE=$?
+else
+    wait $CONTAINER_WAIT_PID
+    EXIT_CODE=$?
+fi
+set -e
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] Process exited with code: $EXIT_CODE"
 exit $EXIT_CODE

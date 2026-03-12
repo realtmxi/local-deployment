@@ -1,15 +1,13 @@
 #!/bin/bash
 
 # ============================================
-# GLM-4.7-Flash Deployment (llama.cpp)
+# GLM-4.7-Flash Deployment (Docker + vLLM)
 # ============================================
 #
-# Model: GLM-4.7-Flash Q8_0 GGUF (single GPU)
-# GPU: Single RTX PRO 6000 Blackwell (96GB)
+# Model: cyankiwi/GLM-4.7-Flash-AWQ-4bit
+# GPU: NVIDIA GB10 (DGX Spark, unified memory, sm_121)
 # Port: 8004
-#
-# Note: sglang and vLLM both fail on Blackwell sm_120
-# for this model's MLA attention, so we use llama.cpp.
+# Container: scitrera/dgx-spark-vllm:0.14.0-t5
 #
 # Usage:
 #   bash glm_4.7_flash.sh
@@ -18,61 +16,49 @@
 
 set -e
 
-# Get script directory
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-
 # ============================================
 # Configuration
 # ============================================
 
-MODEL_PATH="/scratch/murphy/models/GLM-4.7-Flash-GGUF/zai-org_GLM-4.7-Flash-Q8_0.gguf"
-LLAMA_SERVER="${SCRIPT_DIR}/bin/llama-server"
+MODEL_NAME="cyankiwi/GLM-4.7-Flash-AWQ-4bit"
+SERVED_MODEL_NAME="glm-4.7-flash"
 PORT=8004
+CONTAINER_NAME="glm-4.7-flash"
+DOCKER_IMAGE="scitrera/dgx-spark-vllm:0.14.0-t5"
 REMOTE_SSH_URL="murphy@freeinference.org"
-
-# llama-server options
-CTX_SIZE=16384
-N_GPU_LAYERS=999
+ENABLE_SSH_TUNNEL="${ENABLE_SSH_TUNNEL:-1}"
 
 # Log configuration
-LOG_DIR="/scratch/murphy/logs/llama-cpp"
+LOG_DIR="/home/murphy/logs/vllm"
 mkdir -p "$LOG_DIR"
 LOG_FILE="${LOG_DIR}/GLM-4.7-Flash_$(date +%Y%m%d_%H%M%S).log"
 
-# ============================================
-# GPU Configuration
-# ============================================
-
-# Use single GPU (GPU 1, GPU 0 is used by Qwen3-Coder-30B)
-export CUDA_VISIBLE_DEVICES=1
+# Path to patch inside the container
+VLLM_ARCH_PY="/usr/local/lib/python3.12/dist-packages/vllm/transformers_utils/model_arch_config_convertor.py"
 
 # ============================================
 # Validation
 # ============================================
 
 echo "========================================="
-echo "  GLM-4.7-Flash Deployment (llama.cpp)"
+echo "  GLM-4.7-Flash Deployment (Docker)"
 echo "========================================="
 echo ""
 
-if [ ! -f "$LLAMA_SERVER" ]; then
-    echo "Error: llama-server binary not found at $LLAMA_SERVER"
-    exit 1
-fi
-
-if [ ! -f "$MODEL_PATH" ]; then
-    echo "Error: Model file not found: $MODEL_PATH"
+if ! command -v docker &> /dev/null; then
+    echo "Error: docker not found"
     exit 1
 fi
 
 echo "Configuration:"
-echo "  Model:         $MODEL_PATH"
+echo "  Model:         $MODEL_NAME"
+echo "  Served Name:   $SERVED_MODEL_NAME"
 echo "  Port:          $PORT"
-echo "  Context Size:  $CTX_SIZE"
-echo "  GPU Layers:    $N_GPU_LAYERS"
+echo "  Container:     $CONTAINER_NAME"
+echo "  Image:         $DOCKER_IMAGE"
 echo "  SSH Tunnel:    $REMOTE_SSH_URL"
+echo "  Tunnel Mode:   $([ "$ENABLE_SSH_TUNNEL" = "1" ] && echo "enabled" || echo "disabled (managed externally)")"
 echo "  Hostname:      $(hostname)"
-echo "  GPU Devices:   ${CUDA_VISIBLE_DEVICES:-all}"
 echo "  Log File:      $LOG_FILE"
 echo ""
 
@@ -86,10 +72,9 @@ cleanup() {
     echo "  Shutting down services..."
     echo "========================================="
 
-    if [ ! -z "$SERVER_PID" ]; then
-        echo "Stopping llama-server (PID: $SERVER_PID)..."
-        kill $SERVER_PID 2>/dev/null || true
-    fi
+    echo "Stopping container $CONTAINER_NAME..."
+    docker stop "$CONTAINER_NAME" 2>/dev/null || true
+    docker rm "$CONTAINER_NAME" 2>/dev/null || true
 
     if [ ! -z "$TUNNEL_PID" ]; then
         echo "Stopping SSH tunnel (PID: $TUNNEL_PID)..."
@@ -101,52 +86,93 @@ cleanup() {
 
 trap cleanup SIGINT SIGTERM EXIT
 
+# Remove stale container if exists
+docker rm -f "$CONTAINER_NAME" 2>/dev/null || true
+
 # ============================================
-# Start llama-server
+# Start vLLM Server (Docker)
 # ============================================
 
-echo "[$(date '+%Y-%m-%d %H:%M:%S')] Starting llama-server..." | tee -a "$LOG_FILE"
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] Starting vLLM server in Docker..." | tee -a "$LOG_FILE"
 
-"$LLAMA_SERVER" \
-    --model "$MODEL_PATH" \
-    --port "$PORT" \
-    --ctx-size "$CTX_SIZE" \
-    --n-gpu-layers "$N_GPU_LAYERS" \
-    --flash-attn on \
-    --jinja \
-    --host 0.0.0.0 2>&1 | tee -a "$LOG_FILE" &
+docker run \
+    --gpus all \
+    --privileged \
+    --name "$CONTAINER_NAME" \
+    --network host \
+    --ipc host \
+    --restart unless-stopped \
+    -v "${HOME}/.cache/huggingface:/root/.cache/huggingface" \
+    -d \
+    "$DOCKER_IMAGE" \
+    bash -c "
+        # Patch vLLM: add glm4_moe_lite to model architecture config
+        sed -i 's/\"pangu_ultra_moe_mtp\",/\"pangu_ultra_moe_mtp\",\n            \"glm4_moe_lite\",/' $VLLM_ARCH_PY && \
+        vllm serve $MODEL_NAME \
+            --gpu-memory-utilization 0.70 \
+            --tool-call-parser glm47 \
+            --reasoning-parser glm45 \
+            --enable-auto-tool-choice \
+            --served-model-name $SERVED_MODEL_NAME \
+            --max-model-len 202752 \
+            --max-num-batched-tokens 8192 \
+            --host 0.0.0.0 \
+            --port $PORT
+    " 2>&1 | tee -a "$LOG_FILE"
 
-SERVER_PID=$!
-echo "[$(date '+%Y-%m-%d %H:%M:%S')] llama-server started with PID: $SERVER_PID" | tee -a "$LOG_FILE"
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] Container $CONTAINER_NAME started" | tee -a "$LOG_FILE"
+
+# Follow container logs in background
+docker logs -f "$CONTAINER_NAME" 2>&1 | tee -a "$LOG_FILE" &
+LOGS_PID=$!
 
 # ============================================
 # Start SSH Tunnel
 # ============================================
 
-echo "[$(date '+%Y-%m-%d %H:%M:%S')] Starting SSH tunnel..." | tee -a "$LOG_FILE"
-echo "Forwarding port $PORT to $REMOTE_SSH_URL"
+if [ "$ENABLE_SSH_TUNNEL" = "1" ]; then
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Starting SSH tunnel..." | tee -a "$LOG_FILE"
+    echo "Forwarding port $PORT to $REMOTE_SSH_URL"
 
-ssh -N \
-    -o ExitOnForwardFailure=yes \
-    -o ServerAliveInterval=30 \
-    -o ServerAliveCountMax=60 \
-    -o StrictHostKeyChecking=no \
-    -R "0.0.0.0:${PORT}:localhost:${PORT}" \
-    "$REMOTE_SSH_URL" &
+    ssh -N \
+        -o ExitOnForwardFailure=yes \
+        -o ServerAliveInterval=30 \
+        -o ServerAliveCountMax=60 \
+        -o StrictHostKeyChecking=no \
+        -R "0.0.0.0:${PORT}:localhost:${PORT}" \
+        "$REMOTE_SSH_URL" &
 
-TUNNEL_PID=$!
-echo "[$(date '+%Y-%m-%d %H:%M:%S')] SSH tunnel started with PID: $TUNNEL_PID" | tee -a "$LOG_FILE"
+    TUNNEL_PID=$!
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] SSH tunnel started with PID: $TUNNEL_PID" | tee -a "$LOG_FILE"
+else
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] SSH tunnel disabled (ENABLE_SSH_TUNNEL=$ENABLE_SSH_TUNNEL)" | tee -a "$LOG_FILE"
+fi
 
 echo ""
 echo "========================================="
 echo "  Service is running"
 echo "========================================="
 echo ""
-echo "Systemd will restart if any process exits."
+
+if [ "$ENABLE_SSH_TUNNEL" = "1" ]; then
+    echo "Systemd will restart if container or SSH tunnel exits."
+else
+    echo "Systemd will restart if container exits."
+fi
 echo ""
 
-# Wait for either process to exit (then systemd will restart the whole service)
-wait -n $SERVER_PID $TUNNEL_PID 2>/dev/null || wait $SERVER_PID $TUNNEL_PID
-EXIT_CODE=$?
+# Wait for container to exit (or tunnel to die)
+set +e
+docker wait "$CONTAINER_NAME" &
+CONTAINER_WAIT_PID=$!
+
+if [ "$ENABLE_SSH_TUNNEL" = "1" ]; then
+    wait -n $CONTAINER_WAIT_PID $TUNNEL_PID 2>/dev/null || wait $CONTAINER_WAIT_PID $TUNNEL_PID
+    EXIT_CODE=$?
+else
+    wait $CONTAINER_WAIT_PID
+    EXIT_CODE=$?
+fi
+set -e
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] Process exited with code: $EXIT_CODE"
 exit $EXIT_CODE

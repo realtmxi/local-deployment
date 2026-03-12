@@ -1,0 +1,18 @@
+[Unit]
+Description=BGE-M3 Reverse SSH Tunnel (autossh)
+After=network-online.target
+Wants=network-online.target
+PartOf=bge_m3.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStart=/bin/bash /home/murphy/local-deployment/bge_m3_tunnel.sh
+WorkingDirectory=/home/murphy/local-deployment
+Restart=always
+RestartSec=3
+Environment=AUTOSSH_GATETIME=0
+Environment=AUTOSSH_POLL=30
+
+[Install]
+WantedBy=default.target

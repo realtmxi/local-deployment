@@ -2,6 +2,7 @@
 Description=BGE-M3 Embedding Deployment Service (Docker + sglang)
 After=network-online.target docker.service
 Wants=network-online.target
+Wants=bge_m3_tunnel.service
 
 [Service]
 Type=simple
@@ -9,6 +10,7 @@ ExecStart=/bin/bash /home/murphy/local-deployment/bge_m3.sh
 WorkingDirectory=/home/murphy/local-deployment
 Restart=always
 RestartSec=10
+Environment=ENABLE_SSH_TUNNEL=0
 
 [Install]
 WantedBy=default.target
